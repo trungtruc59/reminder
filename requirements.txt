@@ -1,0 +1,6 @@
+PyQt6
+PyQt6-Fluent-Widgets
+
+plyer
+# pystray removed (using QSystemTrayIcon)
+# Pillow removed (using QIcon/QPixmap)
