@@ -1,7 +1,7 @@
 import sys
 import os
 from PyQt6.QtWidgets import QApplication
-from ui import ReminderWindow
+from ui import DashboardWindow
 
 # High DPI scaling
 if hasattr(sys, 'frozen'):
@@ -21,7 +21,7 @@ def main():
         base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     assets_dir = os.path.join(base_path, 'assets')
 
-    window = ReminderWindow(assets_dir)
+    window = DashboardWindow(assets_dir)
     window.show()
     
     sys.exit(app.exec())

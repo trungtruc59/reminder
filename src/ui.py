@@ -1,303 +1,258 @@
 import os
-from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSignal, QObject
-from PyQt6.QtGui import QIcon, QAction
+from PyQt6.QtCore import Qt, QSize, pyqtSignal, QObject, QTimer, QUrl
+from PyQt6.QtGui import QIcon, QDesktopServices, QAction
 from PyQt6.QtWidgets import (
     QSystemTrayIcon, QWidget, QVBoxLayout, QHBoxLayout, 
-    QFrame, QSizePolicy, QMenu, QMessageBox, QApplication
+    QFrame, QSizePolicy, QMenu, QMessageBox, QApplication, QDialog, QLabel, QPushButton
 )
 
 from qfluentwidgets import (
     FluentWindow, SubtitleLabel, CaptionLabel, PushButton, 
     PrimaryPushButton, StrongBodyLabel, CardWidget, 
-    ScrollArea, LineEdit, SpinBox, SwitchButton, 
-    setTheme, Theme, FluentIcon as FIF, InfoBar, InfoBarPosition
+    ScrollArea, SwitchButton, setTheme, Theme, FluentIcon as FIF, 
+    InfoBar, InfoBarPosition, TitleLabel, BodyLabel
 )
+
+class CircleButton(QPushButton):
+    def __init__(self, text, parent=None, radius=90):
+        super().__init__(text, parent)
+        self.setFixedSize(radius*2, radius*2)
+        self.radius = radius
+        
+        # Enhanced 3D Raised Style
+        # Colors:
+        # Top Face: Linear Gradient #00E6A0 -> #00C291
+        # Side/Bottom (Depth): #008f6b
+        # Text shadow for better readability
+        
+        self.default_style = f"""
+            QPushButton {{
+                background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2af5b5, stop:1 #00d49d);
+                color: #ffffff;
+                border: 1px solid #00b080;
+                border-bottom: 12px solid #007a5e; /* Thicker depth */
+                border-radius: {radius}px;
+                font-family: 'Segoe UI', sans-serif;
+                font-weight: 900;
+                font-size: 28px;
+                margin-bottom: 2px;
+                outline: none;
+            }}
+            QPushButton:hover {{
+                background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #4ffff0, stop:1 #1affc2);
+                border-bottom-color: #008f6b;
+                margin-top: 2px; /* Slight press hint on hover? No, just brighten */
+                margin-bottom: 2px;
+            }}
+            QPushButton:pressed {{
+                background-color: #00b080;
+                border-bottom: 2px solid #007a5e; /* Collapsed depth */
+                margin-top: 12px; /* Move down by (OriginalDepth - NewDepth) = 12 - 2 = 10px */
+                margin-bottom: 0px; 
+            }}
+        """
+        self.setStyleSheet(self.default_style)
+        
+        # Add a subtle shadow using GraphicsEffect if possible, but for round buttons in Qt it can be tricky with clipping.
+        # Sticking to CSS borders for "Physical" 3D look is safer and looks cleaner.
+
 
 # Fix relative imports
 try:
-    from logic import TimerManager
-    from notification import NotificationManager
+    from logic import WorkDayMonitor
+    from notification import SoundManager
 except ImportError:
-    from src.logic import TimerManager
-    from src.notification import NotificationManager
+    from src.logic import WorkDayMonitor
+    from src.notification import SoundManager
 
 # Signal Bridge to safeguard threading
 class LogicBridge(QObject):
     tick = pyqtSignal()
-    finished = pyqtSignal(object) # Passes reminder object
+    alert = pyqtSignal(str, str) # title, message
 
-class ReminderCard(CardWidget):
-    """
-    Custom Card for a single reminder. 
-    Inherits from Fluent CardWidget for native look.
-    """
-    def __init__(self, reminder, parent=None, on_delete=None):
+class CustomPopup(QDialog):
+    """Custom centered popup with Icon and Message"""
+    def __init__(self, title, message, assets_dir, parent=None):
         super().__init__(parent)
-        self.reminder = reminder
-        self.on_delete = on_delete
+        self.setWindowTitle(title)
+        self.resize(400, 250)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
         
-        # Layout
-        self.hLayout = QHBoxLayout(self)
-        self.hLayout.setContentsMargins(20, 10, 20, 10)
-        self.hLayout.setSpacing(15)
+        # Style
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #2b2b2b;
+                border: 1px solid #444;
+                border-radius: 10px;
+            }
+            QLabel {
+                color: white;
+            }
+        """)
         
-        # Icon (Optional, just purely decorative)
-        # self.iconWidget = IconWidget(FIF.RINGER)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(20)
+        layout.setContentsMargins(30, 30, 30, 30)
         
-        # Info
-        self.vLayout = QVBoxLayout()
-        self.lblMessage = StrongBodyLabel(reminder.message, self)
-        self.lblInterval = CaptionLabel(f"Lặp lại mỗi {reminder.interval_minutes} phút", self)
-        self.lblInterval.setTextColor("#808080", "#a0a0a0") # Light/Dark grey
+        # Icon
+        icon_lbl = QLabel(self)
+        # Try to load icon
+        if os.path.exists(os.path.join(assets_dir, 'icon.ico')):
+             pixmap = QIcon(os.path.join(assets_dir, 'icon.ico')).pixmap(64, 64)
+             icon_lbl.setPixmap(pixmap)
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(icon_lbl)
         
-        self.vLayout.addWidget(self.lblMessage)
-        self.vLayout.addWidget(self.lblInterval)
+        # Message
+        msg_lbl = TitleLabel(title, self)
+        msg_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(msg_lbl)
         
-        self.hLayout.addLayout(self.vLayout)
-        self.hLayout.addStretch(1)
+        body_lbl = BodyLabel(message, self)
+        body_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        body_lbl.setWordWrap(True)
+        layout.addWidget(body_lbl)
         
-        # Countdown Label
-        self.lblCountdown = SubtitleLabel("00:00", self)
-        self.lblCountdown.setTextColor("#0067c0", "#4cc2ff") # Accent color
-        self.hLayout.addWidget(self.lblCountdown)
+        # Button
+        btn = PrimaryPushButton("OK, Đã rõ", self)
+        btn.setFixedWidth(120)
+        btn.clicked.connect(self.accept)
         
-        # Controls
-        self.btnToggle = PushButton("Start", self)
-        self.btnToggle.setFixedWidth(80)
-        self.btnToggle.clicked.connect(self.toggle_timer)
-        self.hLayout.addWidget(self.btnToggle)
-        
-        self.btnDelete = PushButton("X", self)
-        self.btnDelete.setFixedWidth(40)
-        self.btnDelete.clicked.connect(self.delete_self)
-        self.hLayout.addWidget(self.btnDelete)
-        
-        self.update_ui()
+        h_layout = QHBoxLayout()
+        h_layout.addStretch()
+        h_layout.addWidget(btn)
+        h_layout.addStretch()
+        layout.addLayout(h_layout)
 
-    def toggle_timer(self):
-        if self.reminder.is_running:
-            self.reminder.stop()
-            self.btnToggle.setText("Start")
-        else:
-            self.reminder.start()
-            self.btnToggle.setText("Stop")
-        self.update_ui()
-
-    def delete_self(self):
-        if self.on_delete:
-            self.on_delete(self.reminder.id)
-
-    def update_ui(self):
-        total = self.reminder.remaining_seconds
-        h = total // 3600
-        m = (total % 3600) // 60
-        s = total % 60
-        
-        if h > 0:
-            time_str = f"{h}:{m:02}:{s:02}"
-        else:
-            time_str = f"{m:02}:{s:02}"
-            
-        self.lblCountdown.setText(time_str)
-        if not self.reminder.is_running:
-             self.lblCountdown.setTextColor("#808080", "#808080")
-        else:
-             self.lblCountdown.setTextColor("#0067c0", "#4cc2ff")
-
-
-class ReminderWindow(FluentWindow):
+class DashboardWindow(FluentWindow):
     def __init__(self, assets_dir):
         super().__init__()
         self.assets_dir = assets_dir
-        self.notification_manager = NotificationManager(assets_dir)
+        self.sound_manager = SoundManager(assets_dir)
         
         # Thread Bridge
         self.bridge = LogicBridge()
         self.bridge.tick.connect(self.on_tick_ui)
-        self.bridge.finished.connect(self.on_reminder_finish_ui)
+        self.bridge.alert.connect(self.show_custom_popup)
         
-        # Pass emit functions to TimerManager
-        # NOTE: signal.emit is thread-safe!
-        self.timer_manager = TimerManager(lambda: self.bridge.tick.emit())
-        # We need to hook the 'finish' callback slightly differently since Logic passes 'reminder'
-        # Logic.py expects: on_finish(reminder)
-        # We pass: lambda r: self.bridge.finished.emit(r)
+        # Logic
+        self.monitor = WorkDayMonitor(
+            on_tick_callback=lambda: self.bridge.tick.emit(),
+            on_alert_callback=lambda t, m: self.bridge.alert.emit(t, m)
+        )
         
         # Initialize Window
-        self.setWindowTitle("Periodic Reminder")
-        self.resize(600, 700)
+        self.setWindowTitle("Trợ lý công việc")
+        self.resize(500, 400) # Compact size
         self.setWindowIcon(QIcon(os.path.join(assets_dir, 'icon.ico')))
         
         # Center Screen
         desktop = QApplication.screens()[0].availableGeometry()
         w, h = desktop.width(), desktop.height()
-        self.move(int(w/2 - 300), int(h/2 - 350))
+        self.move(int(w/2 - 250), int(h/2 - 200))
         
         # Setup UI
-        setTheme(Theme.DARK) # Force dark for now or 'AUTO'
+        setTheme(Theme.DARK) 
         
         self.init_ui()
         self.init_tray()
-        
-        self.cards = {}
 
     def init_ui(self):
-        # Create a central widget that FluentWindow navigates to (or just use it as a simple window)
-        # FluentWindow is a NavigationWindow by default. For a simple app, 
-        # let's just use the main central layout or add a single "Home" interface.
-        
         self.homeInterface = QWidget(self)
         self.homeInterface.setObjectName("homeInterface")
-        self.addSubInterface(self.homeInterface, FIF.HOME, "Danh sách")
+        self.addSubInterface(self.homeInterface, FIF.HOME, "Dashboard")
         
         layout = QVBoxLayout(self.homeInterface)
-        layout.setContentsMargins(30, 30, 30, 30)
-        layout.setSpacing(20)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setSpacing(30)
         
-        # Header
-        headerLayout = QHBoxLayout()
-        title = SubtitleLabel("Nhắc nhở của bạn", self.homeInterface)
-        headerLayout.addWidget(title)
-        headerLayout.addStretch(1)
+        # Header / Status Code
+        self.lblStatus = SubtitleLabel("Sẵn sàng làm việc", self.homeInterface)
+        self.lblStatus.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lblStatus.setTextColor("#a0a0a0", "#a0a0a0")
+        layout.addWidget(self.lblStatus)
         
-        btnAdd = PrimaryPushButton(FIF.ADD, "Thêm mới", self.homeInterface)
-        btnAdd.clicked.connect(self.open_add_dialog)
-        headerLayout.addWidget(btnAdd)
-        
-        layout.addLayout(headerLayout)
-        
-        # Scroll Area for Cards
-        self.scrollArea = ScrollArea(self.homeInterface)
-        self.scrollArea.setWidgetResizable(True)
-        self.scrollArea.setStyleSheet("background: transparent; border: none;") # Transparent
-        
-        self.scrollContent = QWidget()
-        self.scrollContent.setStyleSheet("background: transparent;")
-        self.vCardLayout = QVBoxLayout(self.scrollContent)
-        self.vCardLayout.setContentsMargins(0, 0, 0, 0)
-        self.vCardLayout.setSpacing(10)
-        self.vCardLayout.addStretch(1) # Push cards up
-        
-        self.scrollArea.setWidget(self.scrollContent)
-        layout.addWidget(self.scrollArea)
-        
-        # Footer
-        footerLayout = QHBoxLayout()
-        self.switchOntop = SwitchButton(self.homeInterface)
-        self.switchOntop.setText("Ghim trên cùng (Always on Top)")
-        self.switchOntop.checkedChanged.connect(self.toggle_ontop)
-        
-        footerLayout.addWidget(self.switchOntop)
-        footerLayout.addStretch(1)
-        layout.addLayout(footerLayout)
+        # Clock (Realtime)
+        self.lblClock = TitleLabel("00:00:00", self.homeInterface)
+        self.lblClock.setStyleSheet("font-size: 48px; font-weight: bold;")
+        self.lblClock.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.lblClock)
 
-    def open_add_dialog(self):
-        # Using a simple custom Dialog or just inputs
-        # For simplicity in PyQt, let's create a separate Dialog window
-        self.show_add_popup()
+        # Big Start Button
+        self.btnStart = CircleButton("BẮT ĐẦU", self.homeInterface, radius=100)
+        self.btnStart.clicked.connect(self.toggle_work_day)
         
-    def show_add_popup(self):
-        d = QWidget()
-        d.resize(300, 200)
-        d.setWindowTitle("Thêm nhắc nhở")
-        # We can use MessageBox or just a small Fluent Window, 
-        # but let's just add directly for now or use a persistent bottom sheet if library supported.
-        # Let's simple input:
+        # Container for centering the button perfectly
+        btn_container = QVBoxLayout()
+        btn_container.addWidget(self.btnStart, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addLayout(btn_container)
         
-        # Note: In a real app, use a proper Dialog class.
-        pass 
-        # Wait, let's allow adding via the main UI logic for now to keep it concise?
-        # Or better, create a small method to add mock data or prompt user?
-        # Let's implement a quick custom dialog using MessageBox is ugly. 
-        # I'll create a simple input card at the top temporarily or a separate window.
-        
-        from PyQt6.QtWidgets import QDialog
-        
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Thêm nhắc nhở")
-        dlg.resize(300, 200)
-        
-        vbox = QVBoxLayout(dlg)
-        
-        txtMsg = LineEdit(dlg)
-        txtMsg.setPlaceholderText("Nội dung nhắc nhở")
-        vbox.addWidget(txtMsg)
-        
-        numMin = SpinBox(dlg)
-        numMin.setRange(1, 1440)
-        numMin.setValue(30)
-        vbox.addWidget(numMin)
-        
-        btnSave = PrimaryPushButton("Lưu", dlg)
-        btnSave.clicked.connect(lambda: [self.add_reminder(numMin.value(), txtMsg.text()), dlg.accept()])
-        vbox.addWidget(btnSave)
-        
-        dlg.exec()
+        # Footer Note
+        lblNote = CaptionLabel("Tự động nhắc nhở nghỉ giải lao mỗi giờ & nghỉ trưa lúc 12:00", self.homeInterface)
+        lblNote.setTextColor("#606060", "#606060")
+        lblNote.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(lblNote)
 
-    def add_reminder(self, minutes, message):
-        if not message: return
-        
-        # Wrapper to bridge signal
-        callback = lambda r: self.bridge.finished.emit(r)
-        
-        reminder = self.timer_manager.add_reminder(minutes, message, callback)
-        
-        # Create Card
-        card = ReminderCard(reminder, on_delete=self.delete_reminder)
-        # Insert before the stretch (last item)
-        count = self.vCardLayout.count()
-        self.vCardLayout.insertWidget(count - 1, card)
-        
-        self.cards[reminder.id] = card
-        
-        InfoBar.success(
-            title='Thành công',
-            content=f"Đã thêm nhắc nhở '{message}'",
-            orient=Qt.Orientation.Horizontal,
-            isClosable=True,
-            position=InfoBarPosition.TOP_RIGHT,
-            duration=2000,
-            parent=self
-        )
-
-    def delete_reminder(self, r_id):
-        self.timer_manager.remove_reminder(r_id)
-        if r_id in self.cards:
-            card = self.cards[r_id]
-            card.deleteLater() # Qt Cleanup
-            del self.cards[r_id]
+    def toggle_work_day(self):
+        if not self.monitor.running:
+            self.monitor.start()
+            self.btnStart.setText("DỪNG")
+            self.lblStatus.setText("Đang theo dõi công việc...")
+            self.lblStatus.setTextColor("#00cf99", "#00cf99")
+            
+            # Recolor button to Red-ish for STOP state?
+            # Let's keep green/default for consistency or maybe Style change.
+            # For 3D button, changing color requires resetting stylesheet.
+            # Let's simple swap text first.
+            
+            InfoBar.success(
+                title='Đã kích hoạt',
+                content="Chúc bạn một ngày làm việc hiệu quả!",
+                orient=Qt.Orientation.Horizontal,
+                position=InfoBarPosition.TOP,
+                duration=2000,
+                parent=self
+            )
+        else:
+            self.monitor.stop()
+            self.btnStart.setText("BẮT ĐẦU")
+            self.lblStatus.setText("Đã dừng theo dõi")
+            self.lblStatus.setTextColor("#a0a0a0", "#a0a0a0")
 
     def on_tick_ui(self):
-        for card in self.cards.values():
-            card.update_ui()
+        # Update Clock
+        import datetime
+        now = datetime.datetime.now().strftime("%H:%M:%S")
+        self.lblClock.setText(now)
 
-    def on_reminder_finish_ui(self, reminder):
-        # Notification
-        self.notification_manager.show_toast("Đã đến giờ!", reminder.message)
+    def show_custom_popup(self, title, message):
+        # 1. Play Sound
+        self.sound_manager.play_sound()
         
-        if self.switchOntop.isChecked():
-            self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
-            self.show()
-            self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowStaysOnTopHint) # Reset after showing? 
-            # User wants "Always on top", so maybe keep it?
-            # Actually just bringing to front is enough usually.
-            self.activateWindow()
-
-    def toggle_ontop(self, checked):
-        if checked:
-            self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
-        else:
-            self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowStaysOnTopHint)
-        self.show()
+        # 2. Show Popup
+        # Ensure window is visible/restored if minimized?
+        # User said "hiện lên 1 popup giữa màn hình". 
+        # Usually good to ensure app context is front?
+        # Or just show the dialog standalone.
+        
+        popup = CustomPopup(title, message, self.assets_dir, self)
+        
+        # Center popup on screen, not just parent
+        desktop = QApplication.screens()[0].availableGeometry()
+        x = (desktop.width() - popup.width()) // 2
+        y = (desktop.height() - popup.height()) // 2
+        popup.move(x, y)
+        
+        popup.exec()
 
     def init_tray(self):
         self.trayIcon = QSystemTrayIcon(self)
         self.trayIcon.setIcon(QIcon(os.path.join(self.assets_dir, 'icon.ico')))
         
         menu = QMenu()
-        restoreAction = QAction("Mở lại", self)
+        restoreAction = QAction("Mở Dashboard", self)
         restoreAction.triggered.connect(self.showNormal)
-        quitAction = QAction("Thoát", self)
+        quitAction = QAction("Thoát hoàn toàn", self)
         quitAction.triggered.connect(self.quit_app)
         
         menu.addAction(restoreAction)
@@ -305,8 +260,6 @@ class ReminderWindow(FluentWindow):
         
         self.trayIcon.setContextMenu(menu)
         self.trayIcon.show()
-        
-        # Handle double click
         self.trayIcon.activated.connect(self.on_tray_activated)
 
     def on_tray_activated(self, reason):
@@ -314,16 +267,15 @@ class ReminderWindow(FluentWindow):
             self.showNormal()
 
     def closeEvent(self, event):
-        # Minimize to tray instead of closing
         event.ignore()
         self.hide()
         self.trayIcon.showMessage(
-            "Reminder App",
-            "Ứng dụng vẫn chạy ngầm ở đây!",
+            "Work Assistant",
+            "Ứng dụng đang chạy ngầm để nhắc nhở bạn.",
             QSystemTrayIcon.MessageIcon.Information,
             2000
         )
 
     def quit_app(self):
-        self.timer_manager.shutdown()
+        self.monitor.shutdown()
         QApplication.quit()
