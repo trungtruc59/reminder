@@ -1,3 +1,5 @@
+# Restored Content for src/ui.py
+
 import os
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QObject, QTimer, QUrl
 from PyQt6.QtGui import QIcon, QDesktopServices, QAction
@@ -12,50 +14,6 @@ from qfluentwidgets import (
     ScrollArea, SwitchButton, setTheme, Theme, FluentIcon as FIF, 
     InfoBar, InfoBarPosition, TitleLabel, BodyLabel
 )
-
-class CircleButton(QPushButton):
-    def __init__(self, text, parent=None, radius=90):
-        super().__init__(text, parent)
-        self.setFixedSize(radius*2, radius*2)
-        self.radius = radius
-        
-        # Enhanced 3D Raised Style
-        # Colors:
-        # Top Face: Linear Gradient #00E6A0 -> #00C291
-        # Side/Bottom (Depth): #008f6b
-        # Text shadow for better readability
-        
-        self.default_style = f"""
-            QPushButton {{
-                background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2af5b5, stop:1 #00d49d);
-                color: #ffffff;
-                border: 1px solid #00b080;
-                border-bottom: 12px solid #007a5e; /* Thicker depth */
-                border-radius: {radius}px;
-                font-family: 'Segoe UI', sans-serif;
-                font-weight: 900;
-                font-size: 28px;
-                margin-bottom: 2px;
-                outline: none;
-            }}
-            QPushButton:hover {{
-                background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #4ffff0, stop:1 #1affc2);
-                border-bottom-color: #008f6b;
-                margin-top: 2px; /* Slight press hint on hover? No, just brighten */
-                margin-bottom: 2px;
-            }}
-            QPushButton:pressed {{
-                background-color: #00b080;
-                border-bottom: 2px solid #007a5e; /* Collapsed depth */
-                margin-top: 12px; /* Move down by (OriginalDepth - NewDepth) = 12 - 2 = 10px */
-                margin-bottom: 0px; 
-            }}
-        """
-        self.setStyleSheet(self.default_style)
-        
-        # Add a subtle shadow using GraphicsEffect if possible, but for round buttons in Qt it can be tricky with clipping.
-        # Sticking to CSS borders for "Physical" 3D look is safer and looks cleaner.
-
 
 # Fix relative imports
 try:
@@ -178,14 +136,15 @@ class DashboardWindow(FluentWindow):
         self.lblClock.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.lblClock)
 
-        # Big Start Button
-        self.btnStart = CircleButton("BẮT ĐẦU", self.homeInterface, radius=100)
+        # Big Start Button (Standard Windows 11 Style)
+        # Using PrimaryPushButton with standard Fluent styles
+        self.btnStart = PrimaryPushButton("Bắt đầu làm việc", self.homeInterface)
+        self.btnStart.setIcon(FIF.PLAY)
+        self.btnStart.setFixedSize(200, 50) # Standard large button
         self.btnStart.clicked.connect(self.toggle_work_day)
         
-        # Container for centering the button perfectly
-        btn_container = QVBoxLayout()
-        btn_container.addWidget(self.btnStart, 0, Qt.AlignmentFlag.AlignCenter)
-        layout.addLayout(btn_container)
+        # Center contents
+        layout.addWidget(self.btnStart, 0, Qt.AlignmentFlag.AlignCenter)
         
         # Footer Note
         lblNote = CaptionLabel("Tự động nhắc nhở nghỉ giải lao mỗi giờ & nghỉ trưa lúc 12:00", self.homeInterface)
@@ -196,14 +155,10 @@ class DashboardWindow(FluentWindow):
     def toggle_work_day(self):
         if not self.monitor.running:
             self.monitor.start()
-            self.btnStart.setText("DỪNG")
+            self.btnStart.setText("Dừng làm việc")
+            self.btnStart.setIcon(FIF.PAUSE)
             self.lblStatus.setText("Đang theo dõi công việc...")
             self.lblStatus.setTextColor("#00cf99", "#00cf99")
-            
-            # Recolor button to Red-ish for STOP state?
-            # Let's keep green/default for consistency or maybe Style change.
-            # For 3D button, changing color requires resetting stylesheet.
-            # Let's simple swap text first.
             
             InfoBar.success(
                 title='Đã kích hoạt',
@@ -215,7 +170,8 @@ class DashboardWindow(FluentWindow):
             )
         else:
             self.monitor.stop()
-            self.btnStart.setText("BẮT ĐẦU")
+            self.btnStart.setText("Bắt đầu làm việc")
+            self.btnStart.setIcon(FIF.PLAY)
             self.lblStatus.setText("Đã dừng theo dõi")
             self.lblStatus.setTextColor("#a0a0a0", "#a0a0a0")
 
